@@ -1,0 +1,385 @@
+---
+title: "Final Project"
+author: "Matteo Guzman"
+format: html
+editor: visual
+---
+
+# Research Questions
+
+-   Does installed renewable electricity capacity growth from 2000-2022 correlate with renewable electricity generation?
+
+-   Is there a relationship between the amount of international funding for renewable energy given to developing countries and the growth of installed renewable electricity capacity in those countries from 2000-2022?
+
+# Data & Clean-Up
+
+I am using 2 data sets:
+
+One contains the amount of international financing in 2021 dollars that each developing country received from 2000-2022. This data was sourced from the website “Our World In Data” (https://ourworldindata.org/grapher/international-finance-clean-energy), who in turn sourced their data from multiple sources compiled by the UN via UN SDG Indicators Database (https://unstats.un.org/sdgs/dataportal), UN Department of Economic and Social Affairs (accessed 2024). More information available at: https://unstats.un.org/sdgs/metadata/files/Metadata-07-0a-01.pdf. This data set contains 4 variables:
+
+-Entity (categorical) - this is the country name
+
+-Code (categorical) - this is the country code
+
+-Year (numeric discrete) - this is the year
+
+-Financing (numeric continuous) - this is the amount of money the country received from international sources. (Please note that “Financing” is not the actual variable name, a long description loaded in as the variable name when downloading from the database. I will change it to “Financing” in my code.)
+
+The second data set contains data about the amount of electricity generated and also total installed capacity by each country each year from 2000-2023, and breaks it down by whether it was renewable or not, and if it was on-grid or off-grid. This data was sourced from the “International Renewable Energy Agency” (IRENA) from its Data web page (https://www.irena.org/Data). It collects data from its 170 member countries on renewable energy. This data set contains 6 variables:
+
+-Country/area (categorical) - this is the country or region name
+
+-Technology (categorical) - this is how the electricity was generated (renewable, nonrenewable, etc)
+
+-Data Type (categorical) - this is whether the row displays the actual amount of electricity *generated* for the whole year, or whether it displays the amount of electrical *capacity* the country had that year, regardless of how much was actually generated
+
+-Grid connection (categorical) - this is whether the data in the row is for on-grid, off-grid or both (All)
+
+-Year (numeric discrete) - this is the year
+
+-Electricity Statistics (MW/GWh) (numeric continuous) - this is the amount of electricity, in MW or GWh (depending on the data type variable - GWh for electricity generation, and MW for capacity)
+
+```{r}
+library(tidyverse)
+library(stringr)
+
+elecstat <- read_csv("data/ELECSTAT_20250222-014316.csv",
+                     skip = 1)
+
+int_fin <- read_csv("data/international-finance-clean-energy.csv")
+
+int_fin <- int_fin |>
+  rename(Financing = '7.a.1 - International financial flows to developing countries in support of clean energy research and development and renewable energy production, including in hybrid systems (millions of constant 2021 United States dollars) - EG_IFF_RANDN - All renewables')
+
+funding_total <- int_fin |>
+  group_by(Entity) |>
+    summarize(Total_Financing = sum(Financing))
+
+#Fix country names so they match
+
+funding_countries <- unique(funding_total$Entity)
+elecstat_countries <- unique(elecstat$`Country/area`)
+
+name_mapping <- data.frame(
+  elecstat_names = elecstat_countries,
+  funding_names = sapply(elecstat_countries, function(elecstat_names) {
+    match <- funding_countries[str_detect(elecstat_names, fixed(funding_countries, ignore_case = TRUE))]
+    if(length(match) > 0) match[1]
+    else elecstat_names}))
+
+multi_mapped <- name_mapping |>
+  group_by(funding_names) |>
+  filter(n() > 1) |> 
+  arrange(funding_names) |>
+  print(n = Inf)
+
+name_mapping_fixed <- name_mapping |>
+  mutate(
+    funding_names = case_when(
+      elecstat_names == "Dominican Republic (the)" ~ "Dominican Republic",
+      elecstat_names == "Equatorial Guinea" ~ "Equatorial Guinea",
+      elecstat_names == "Papua New Guinea" ~ "Papua New Guinea",
+      elecstat_names == "Guinea-Bissau" ~ "Guinea-Bissau",
+      elecstat_names == "Democratic Republic of the Congo (the)" ~ 
+      "Democratic Republic of Congo",
+      elecstat_names == "Republic of the Congo" ~ "Congo",
+      elecstat_names == "Niger (the)" ~ "Niger",
+      elecstat_names == "Nigeria" ~ "Nigeria",
+      elecstat_names == "Somalia" ~ "Somalia",
+      elecstat_names == "Viet Nam" ~ "Vietnam",
+      elecstat_names == "Lao People's Democratic Republic (the)" ~ "Laos",
+      elecstat_names == "China, Hong Kong Special Administrative Region" ~
+        "Hong Kong",
+      elecstat_names == "American Samoa" ~ "American Samoa",
+      elecstat_names == "South Georgia and the South Sandwich Islands" ~
+        "South Georgia and the South Sandwich Islands",
+      elecstat_names == "Democratic People's Republic of Korea (the)" ~
+        "North Korea",
+      elecstat_names == "Timor-Leste" ~ "East Timor",
+      elecstat_names == "Cabo Verde" ~ "Cape Verde",
+      elecstat_names == "Micronesia (Federated States of)" ~ 
+        "Micronesia (country)",
+      TRUE ~ funding_names
+    ))
+
+name_mapping_fixed |>
+  group_by(funding_names) |>
+  filter(n() > 1) |>
+  arrange(funding_names) #checking to make sure it's 0
+
+elecstat <- elecstat |>
+  left_join(name_mapping_fixed,
+            by = c("Country/area" = "elecstat_names")) |>
+  mutate(`Country/area` = funding_names)
+
+unmatched <- anti_join(
+  elecstat |> distinct(funding_names),
+  funding_total |> distinct(Entity),
+  by = c("funding_names" = "Entity"))
+
+print(unmatched)
+
+#end fixes
+
+elecstat <- elecstat |>
+  mutate(`Electricity statistics (MW/GWh)` = 
+           na_if(`Electricity statistics (MW/GWh)`, "-"),
+         `Electricity statistics (MW/GWh)` = 
+           as.numeric(`Electricity statistics (MW/GWh)`))
+
+
+#create capacity growth data
+
+renewable_capacity_2000 <- elecstat |>
+  filter(Technology == "Total Renewable",
+         `Data Type` == "Electricity Installed Capacity (MW)",
+         `Grid connection` == "On-grid",
+          Year == 2000) |>
+  select(`Country/area`, capacity_2000 = `Electricity statistics (MW/GWh)`)
+
+renewable_capacity_2022 <- elecstat |>
+  filter(Technology == "Total Renewable",
+         `Data Type` == "Electricity Installed Capacity (MW)",
+         `Grid connection` == "On-grid",
+          Year == 2022) |>
+  select(`Country/area`, capacity_2022 = `Electricity statistics (MW/GWh)`)
+
+combined_capacity <- renewable_capacity_2000 |>
+  full_join(renewable_capacity_2022, by = "Country/area")
+
+combined_capacity <- combined_capacity |>
+  mutate(capacity_2000 = replace_na(capacity_2000, 0),
+         capacity_2022 = replace_na(capacity_2022, 0))
+
+renewable_capacity_growth <- combined_capacity |>
+  mutate(Capacity_Growth = capacity_2022 - capacity_2000) |>
+  select(`Country/area`, Capacity_Growth)
+
+#create generation total data
+
+renewable_generation_total <- elecstat |>
+  filter(Technology == "Total Renewable",
+         `Data Type` == "Electricity Generation (GWh)",
+         `Grid connection` == "On-grid",
+          Year != 2023) |>
+              group_by(`Country/area`) |>
+                  summarize(Total_Renewable_Generation = 
+                              sum(`Electricity statistics (MW/GWh)`,
+                                  na.rm = TRUE))
+
+#join data together into a single dataset
+
+funding_total <- funding_total |>
+  rename(`Country/area` = 'Entity')
+
+final_dataset <- funding_total |>
+  left_join(renewable_capacity_growth) |>
+  left_join(renewable_generation_total)
+  
+#Remove regional data by removing rows with NAs
+
+final_dataset <- final_dataset |>
+  filter(!is.na(Capacity_Growth), 
+    !is.na(Total_Renewable_Generation))
+
+
+```
+
+The 77x1 funding_names tibble contains the countries that will not be included in the analysis, due to either not being present in the international financing data or still not matching the country names between both datasets after correction. Most of these countries are not considered developing nations and should be excluded from our analysis, however, there are some developing countries (though relatively few), which could impact the subsequent data analysis, most notably the countries of Ivory Coast and Turkey, due to the unrecognized characters in their names. This will not likely have a very large effect on the analysis, but is nonetheless important to note.
+
+# Descriptive Statistics
+
+## Histograms
+
+### International Financing
+
+```{r}
+ggplot(final_dataset, aes(x = Total_Financing)) +
+  geom_histogram() +
+  labs(X = "Total Financing, Inflation-Adjusted in 2021 US Dollars")
+
+ggplot(final_dataset, aes(x = Total_Financing)) +
+  geom_histogram() +
+  scale_x_log10() + 
+  labs(x = "Total Financing, Inflation-Adjusted in 2021 US Dollars (log10 Scale)")
+```
+
+### Total Renewable Capacity Growth
+
+```{r}
+ggplot(final_dataset, aes(x = Capacity_Growth)) +
+  geom_histogram() +
+  labs(x = "Renewable Electricity Capacity Growth in MW, 2000-2022")
+
+ggplot(final_dataset, aes(x = Capacity_Growth)) +
+  geom_histogram() +
+  scale_x_log10() + 
+  labs(x = "Renewable Electricity Capacity Growth in MW, 2000-2022 (log10 Scale)")
+```
+
+### Total Renewable Generation
+
+```{r}
+ggplot(final_dataset, aes(x = Total_Renewable_Generation)) +
+  geom_histogram() +
+  labs(x = "Total Renewable Electricity Generation in GWh, 2000-2022")
+
+ggplot(final_dataset, aes(x = Total_Renewable_Generation)) +
+  geom_histogram() +
+  scale_x_log10() + 
+  labs(x = "Total Renewable Electricity Generation in GWh, 2000-2022 (log10 Scale)")
+```
+
+## Boxplots
+
+```{r}
+#organize countries by continent
+library(countrycode)
+
+final_dataset <- final_dataset |>
+  mutate(Continent = countrycode(`Country/area`,
+                                 origin = "country.name",
+                                 destination = "continent"),
+         Continent = case_when(`Country/area` == "Kosovo" ~ "Europe",
+                               `Country/area` == 
+                                 "Micronesia (country)" ~ "Oceania",  
+                                TRUE ~ Continent))
+
+```
+
+### International Funding by Continent
+
+```{r}
+ggplot(final_dataset, aes(x = Continent, y = Total_Financing)) +
+  geom_boxplot() +
+  labs(y = "Total Financing, Inflation-Adjusted in 2021 US Dollars")
+
+ggplot(final_dataset, aes(x = Continent, y = Total_Financing)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  labs(y = "Total Financing, Inflation-Adjusted in 2021 USD (log10 Scale)")
+  
+```
+
+### Total Renewable Capacity Growth
+
+```{r}
+ggplot(final_dataset, aes(x = Continent, y = Capacity_Growth)) +
+  geom_boxplot() +
+  labs(y = "Renewable Electricity Capacity Growth in MW, 2000-2022")
+
+ggplot(final_dataset, aes(x = Continent, y = Capacity_Growth)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  labs(y = "Renewable Electricity Capacity Growth in MW, 2000-2022 (log10 Scale")
+```
+
+### Total Renewable Generation
+
+```{r}
+ggplot(final_dataset, aes(x = Continent, y = Total_Renewable_Generation)) +
+  geom_boxplot() +
+  labs(y = "Renewable Electricity Generation in GWh, 2000-2022")
+
+ggplot(final_dataset, aes(x = Continent, y = Total_Renewable_Generation)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  labs(y = "Renewable Electricity Generation in GWh, 2000-2022 (log10 Scale")
+```
+
+## Scatter Plots
+
+### Capacity Growth vs Total Generation
+
+```{r}
+final_dataset |>
+  ggplot(aes(x = Capacity_Growth,
+             y = Total_Renewable_Generation)) +
+  geom_point() +
+  labs(x = "Renewable Electricity Capacity Growth in MW, 2000-2022)", y = "Renewable Electricity Generation in GWh, 2000-2022")
+
+final_dataset |>
+  ggplot(aes(x = Capacity_Growth,
+             y = Total_Renewable_Generation)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "Renewable Electricity Capacity Growth in MW, 2000-2022)", y = "Renewable Electricity Generation in GWh, 2000-2022")
+```
+
+### International Financing vs Total Capacity Growth
+
+```{r}
+final_dataset |>
+  ggplot(aes(x = Total_Financing,
+             y = Capacity_Growth)) +
+  geom_point() +labs(x = "Total Financing, Inflation-Adjusted in 2021 USD", y= "Renewable Capacity Growth in MW")
+
+final_dataset |>
+  ggplot(aes(x = Total_Financing,
+             y = Capacity_Growth)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "Total Financing, Inflation-Adjusted in 2021 USD (log10 Scale)", y= "Renewable Capacity Growth in MW (log10 Scale)")
+```
+
+## Summary Statistics
+
+```{r}
+final_dataset |>
+  group_by(Continent) |>
+  summarize(Mean_Financing = mean(Total_Financing),
+            SD_Financing = sd(Total_Financing),
+            Min_Financing = min(Total_Financing),
+            Max_Financing = max(Total_Financing),
+            Mean_Capacity = mean(Capacity_Growth),
+            SD_Capacity = sd(Capacity_Growth),
+            Min_Capacity = min(Capacity_Growth),
+            Max_Capacity = max(Capacity_Growth))
+
+```
+
+# Inferential Statistics
+
+## Question 1
+
+Does installed renewable electricity capacity growth from 2000-2022 correlate with renewable electricity generation?
+
+```{r}
+cor.test(final_dataset$Capacity_Growth, final_dataset$Total_Renewable_Generation)
+
+capacity_generation_model <- lm(Total_Renewable_Generation ~ Capacity_Growth, data = final_dataset)
+
+summary(capacity_generation_model)
+```
+
+There was a strong, statistically significant correlation between capacity growth and generation, with an r of 0.9593 (which is very strong as it is close to 1) and a p-value of \< 2.2e-16 (which is very close to 0 and is much less than 0.05). This means that the two variables are highly correlated.
+
+The linear regression model also showed a strong relationship, as electricity generation increased by 23.29 GWh over the time period for every increase of 1 MW of capacity growth. This was also highly significant (p-value: \<2.2e-16) and capacity growth explained about 92% of the variance in the total renewable generation from 2000-2022.
+
+## Question 2
+
+Is there a relationship between the amount of international funding for renewable energy given to developing countries and the growth of installed renewable electricity capacity in those countries from 2000-2022?
+
+```{r}
+cor.test(final_dataset$Total_Financing, final_dataset$Capacity_Growth)
+
+financing_capacity_model <- lm(Capacity_Growth ~ Total_Financing, data = final_dataset)
+
+summary(financing_capacity_model)
+```
+
+The correlation results revealed a weak positive correlation (r = 0.24) that was statistically significant (p-value: 0.003455). The r of 0.24 is closer to 0 than 1, indicating a relatively weak correlation despite being solidly significant.
+
+The linear regression model also showed a statistically significant, but weak relationship. For every \$1 of additional financing, renewable capacity grew by 0.0000092 MW (or, in more relatable terms, for every \$1 million in financing, capacity grew by 9.2 MW). This effect was statistically significant (p-value: 0.003455), but only explained about 5.75% of the variance in capacity growth (R-squared = 0.05745). This means that other factors had a larger influence over the variance in capacity growth.
+
+# Conclusion
+
+The analysis of these datasets showed that there is a nearly perfect linear relationship (R-squared = 0.92) between renewable capacity growth and renewable electricity generation, which establishes that countries that built more capacity tended to produce more renewable electricity during 2000-2022. This is an important basis to establish, as it suggests that building infrastructure is crucial for increasing renewable energy production in developing countries. This clear trend can be easily visualized on the log-transformed scatter plot.
+
+However, the international financing showed a weaker effect on renewable capacity growth. While funding did have a statistically significant effect, that effect was relatively small (only explained about 5.75% of the variance in capacity growth) and highlights that while international funding is important, other factors (such as domestic policy, geography, local corruption, or access to energy resources) could potentially be more important when considering the most effective ways to assist developing countries in transitioning towards lower-emission energy grids. This weaker relationship can be visualized in the second log-transformed scatter plots. Additionally, it is quite clear based on the large standard deviations in the summary statistics and in the various plots that a few countries both receive much more international financing and generate/install more renewable energy capacity than the majority of developing nations.
+
+Some limitations of this analysis lie in the exclusion of some developing countries that were not present in both datasets (such as American Samoa), or that I was not able to properly match due to formatting issues (such as Turkiye or Cote'd'Ivoire/Ivory Coast). The loss of these observations, while few in number compared to the 147 observations in the final dataset, likely only had a minor effect but were still a limitation. Additionally, the countries chosen to be considered "developing" is not entirely clear, and is likely based on UN definitions of developing nations (since both original datasets were retrieved from international organizations), but those definitions are still ultimately subjective and that subjectivity has a major influence on this analysis.
+
+Overall, while international funding is an important tool, it should be implemented alongside other measures to create a multifaceted approach, considerate of multiple factors outside of only funding (which further analyses could elucidate), to building renewable energy infrastructure in the developing world.
